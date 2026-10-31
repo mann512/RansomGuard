@@ -1,0 +1,66 @@
+"""Identify and stop the process responsible for file activity."""
+import os
+from pathlib import Path
+import psutil
+from . import config
+
+def _scan_by_cmdline():
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            lower = cmdline.lower()
+            if "benign_ransomware_sim" in lower or "ransomguard_sim" in lower:
+                return {"pid": proc.info["pid"], "name": proc.info["name"], "cmdline": cmdline, "source": "cmdline_scan"}
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess): continue
+    return None
+
+def _read_simulator_pid():
+    try:
+        if config.SIMULATOR_PID_FILE.exists():
+            pid = int(config.SIMULATOR_PID_FILE.read_text().strip())
+            if not psutil.pid_exists(pid): return None
+            try:
+                proc = psutil.Process(pid)
+                cmdline = " ".join(proc.cmdline()).lower()
+                if "benign_ransomware_sim" in cmdline or "ransomguard_sim" in cmdline: return pid
+            except Exception: pass
+    except Exception: pass
+    return None
+
+def find_process_for_file(path):
+    target = str(Path(path).resolve())
+    try:
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                for f in proc.open_files():
+                    if os.path.abspath(f.path) == target:
+                        return {"pid": proc.pid, "name": proc.info.get("name"), "cmdline": "", "source": "open_files_scan"}
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess): continue
+    except Exception: pass
+    return None
+
+def find_culprit(affected_paths):
+    info = _scan_by_cmdline()
+    if info: return info
+    pid = _read_simulator_pid()
+    if pid:
+        try:
+            proc = psutil.Process(pid)
+            return {"pid": pid, "name": proc.name(), "cmdline": " ".join(proc.cmdline()), "source": "simulator_pid_file"}
+        except Exception: pass
+    for p in affected_paths:
+        info = find_process_for_file(p)
+        if info: return info
+    return None
+
+def terminate_process(pid) -> bool:
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try: proc.wait(timeout=3)
+        except psutil.TimeoutExpired: proc.kill()
+        return True
+    except psutil.NoSuchProcess: return True
+    except Exception as e:
+        print(f"[guard] terminate failed for pid {pid}: {e}")
+        return False

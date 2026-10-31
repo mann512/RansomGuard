@@ -1,0 +1,137 @@
+"""RansomGuard core - orchestrates monitor, detector, backup, guard, DB."""
+import threading
+import time
+from pathlib import Path
+from . import canary, config, database, process_guard
+from .backup import BackupManager
+from .monitor import FileMonitor
+
+class RansomGuard:
+    def __init__(self):
+        self.db = database.Database()
+        self.backup_mgr = BackupManager(db=self.db)
+        self.settings = config.load_settings()
+        self.monitor = None
+        self.status = "stopped"
+        self._lock = threading.Lock()
+        self._last_alert_ts = 0.0
+        self._subscribers = []
+
+    def add_folder(self, folder: str):
+        folder = str(Path(folder).expanduser().resolve())
+        if not Path(folder).is_dir(): raise ValueError(f"Not a directory: {folder}")
+        if folder not in self.settings["protected_folders"]:
+            self.settings["protected_folders"].append(folder)
+            config.save_settings(self.settings)
+            n = canary.plant_canaries_recursive(Path(folder))
+            print(f"[core] planted {n} canaries under {folder}")
+            snaps = self.backup_mgr.snapshot_folder(Path(folder))
+            print(f"[core] snapshot: {len(snaps)} files")
+        return self.settings["protected_folders"]
+
+    def remove_folder(self, folder: str):
+        folder = str(Path(folder).expanduser().resolve())
+        if folder in self.settings["protected_folders"]:
+            self.settings["protected_folders"].remove(folder)
+            config.save_settings(self.settings)
+        return self.settings["protected_folders"]
+
+    def update_settings(self, data: dict):
+        for k in ("auto_stop", "auto_backup", "consent_given"):
+            if k in data: self.settings[k] = bool(data[k])
+        config.save_settings(self.settings)
+        return self.settings
+
+    def start(self):
+        if self.status == "running": return
+        folders = self.settings["protected_folders"]
+        if not folders: raise ValueError("No protected folders configured")
+        if not self.settings.get("consent_given"): raise ValueError("Consent not given")
+        self.monitor = FileMonitor(folders, self._handle_signal)
+        self.monitor.start()
+        self.status = "running"
+
+    def stop(self):
+        if self.monitor:
+            self.monitor.stop()
+            self.monitor = None
+        self.status = "stopped"
+
+    def _handle_signal(self, signal):
+        severity, score = signal["severity"], signal["score"]
+        if severity not in ("critical", "high"): return
+        now = time.time()
+        if severity != "critical" and now - self._last_alert_ts < 6: return
+        with self._lock:
+            if now - self._last_alert_ts < 3: return
+            self._last_alert_ts = now
+            path = signal["path"]
+            reason = "; ".join(signal["signals"])
+            affected = set(self.monitor.detector.recent_affected_paths(window=30))
+            affected.add(path)
+            affected = sorted(affected)
+
+            alert_id = self.db.add_alert(severity=severity, score=score, reason=reason, affected_files=affected)
+            print(f"[ALERT #{alert_id}] {severity} {score} - {reason}")
+
+            if self.settings.get("auto_backup", True):
+                self.backup_mgr.forensic_backup(affected, alert_id=alert_id)
+
+            process_info = process_guard.find_culprit(affected)
+            print(f"[ALERT #{alert_id}] culprit: {process_info}")
+            stopped = False
+            if process_info and self.settings.get("auto_stop", True):
+                stopped = process_guard.terminate_process(process_info["pid"])
+                print(f"[ALERT #{alert_id}] stop success: {stopped}")
+            self.db.update_alert_process(alert_id, process_info, stopped)
+
+            for sub in list(self._subscribers):
+                try: sub(alert_id)
+                except Exception: pass
+
+    def subscribe(self, fn): self._subscribers.append(fn)
+
+    def get_status(self):
+        folders = self.settings["protected_folders"]
+        return {"status": self.status, "protected_folders": folders, "canaries": canary.verify_canaries(folders) if folders else {}, "settings": self.settings, "stats": self.db.stats()}
+
+    def get_activity(self, limit=100):
+        return self.monitor.detector.recent_events(limit=limit) if self.monitor else []
+
+    def get_threat_level(self):
+        return self.monitor.detector.threat_level() if self.monitor else {"level": 0, "label": "safe", "recent_events": 0, "window": 10}
+
+    def restore_alert(self, alert_id: int):
+        alert = self.db.get_alert(alert_id)
+        if not alert: return {"ok": False, "error": "alert not found"}
+        results = []
+        for path in alert["affected_files"]:
+            p = Path(path)
+            candidates = [p]
+            if p.suffix.lower() in config.SUSPICIOUS_EXTENSIONS: candidates = [p.with_suffix(""), p]
+            snap = None
+            restore_target = None
+            for cand in candidates:
+                snap = self.db.latest_snapshot_for_path(str(cand))
+                if snap:
+                    restore_target = cand
+                    break
+            if not snap:
+                results.append({"file": path, "ok": False, "error": "no clean snapshot available"})
+                continue
+            if self.monitor: self.monitor.detector.suppress(str(restore_target))
+            try:
+                res = self.backup_mgr.restore(restore_target, Path(snap["backup_path"]))
+                if p != restore_target and p.exists():
+                    try: p.unlink()
+                    except Exception: pass
+                results.append({"file": str(restore_target), **res})
+            except Exception as e:
+                results.append({"file": str(restore_target), "ok": False, "error": str(e)})
+            finally:
+                if self.monitor:
+                    target = str(restore_target)
+                    threading.Timer(2.0, lambda t=target: self.monitor and self.monitor.detector.unsuppress(t)).start()
+        ok = bool(results) and all(r.get("ok") for r in results)
+        if ok: self.db.mark_restored(alert_id)
+        return {"ok": ok, "results": results}

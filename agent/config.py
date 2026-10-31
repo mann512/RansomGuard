@@ -1,0 +1,37 @@
+import json
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+DB_PATH = DATA_DIR / "ransomguard.db"
+BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_DIR.mkdir(exist_ok=True)
+SETTINGS_FILE = DATA_DIR / "settings.json"
+SIMULATOR_PID_FILE = DATA_DIR / "simulator.pid"
+CANARY_PREFIX = ".ransomguard_canary_"
+CANARY_EXTENSIONS = [".docx", ".xlsx", ".pdf", ".txt"]
+CANARY_MAX_DEPTH = 4
+CANARY_MAX_PER_TREE = 200
+SNAPSHOT_MAX_FILES = 2000
+SNAPSHOT_MAX_FILE_SIZE = 20_000_000
+DEFAULT_SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv", "$Recycle.Bin", "AppData", ".cache", "Windows"}
+MONITOR_SKIP_DIRS = DEFAULT_SKIP_DIRS
+MASS_MOD_WINDOW = 10
+MASS_MOD_THRESHOLD = 15
+MASS_RENAME_WINDOW = 5
+MASS_RENAME_THRESHOLD = 8
+ENTROPY_THRESHOLD = 7.5
+ENTROPY_DELTA = 1.5
+ENTROPY_MAX_BYTES = 1_000_000
+SUSPICIOUS_EXTENSIONS = {".locked", ".enc", ".crypt", ".ransom", ".encrypted"}
+RISK_CRITICAL = 80
+RISK_HIGH = 50
+RISK_MEDIUM = 25
+DEFAULT_SETTINGS = {"protected_folders": [], "exclusions": [], "consent_given": False, "auto_stop": True, "auto_backup": True}
+def load_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try: return {**DEFAULT_SETTINGS, **json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))}
+        except Exception: pass
+    return dict(DEFAULT_SETTINGS)
+def save_settings(settings: dict) -> None:
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")

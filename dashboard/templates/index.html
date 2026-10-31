@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RansomGuard Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header><h1>RansomGuard</h1><div id="status-pill" class="pill stopped">stopped</div></header>
+  <main>
+    <section class="card wide"><h2>Threat Level</h2><div class="threat-bar"><div class="threat-fill" id="threat-fill"></div></div><div class="threat-label" id="threat-label">safe &middot; 0 / 100</div></section>
+    <section class="card">
+      <h2>Status</h2>
+      <div class="row"><span>Protected folders</span><strong id="folder-count">0</strong></div>
+      <div class="row"><span>Total alerts</span><strong id="total-alerts">0</strong></div>
+      <div class="row"><span>Restored</span><strong id="restored">0</strong></div>
+      <div class="actions"><button id="btn-start">Start agent</button><button id="btn-stop" class="danger">Stop agent</button></div>
+      <div class="actions"><label class="check"><input type="checkbox" id="consent"> I consent to monitoring.</label></div>
+      <div class="actions"><label class="check"><input type="checkbox" id="auto-stop"> Auto-stop</label><label class="check"><input type="checkbox" id="auto-backup"> Auto-backup</label></div>
+    </section>
+    <section class="card"><h2>Protected folders</h2><ul id="folder-list"></ul><div class="row"><input id="new-folder" type="text" placeholder="C:\demo\business"><button id="btn-add-folder">Add</button></div></section>
+    <section class="card"><h2>Canary health</h2><ul id="canary-list"></ul><div class="actions"><button id="btn-force-backup">Force Backup</button><button id="btn-recreate-canaries">Recreate missing</button></div></section>
+    <section class="card wide"><h2>Live activity</h2><div id="activity-feed" class="activity-feed"><div class="empty">No activity yet.</div></div></section>
+    <section class="card wide"><h2>Alerts</h2><table><thead><tr><th>Time</th><th>Severity</th><th>Score</th><th>Reason</th><th>Process</th><th>State</th><th>Actions</th></tr></thead><tbody id="alerts-body"></tbody></table></section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
